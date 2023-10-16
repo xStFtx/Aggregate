@@ -5,7 +5,6 @@ import numpy as np
 import gym
 from collections import namedtuple, deque
 import random
-import time
 
 class QuaternionLinear(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -18,18 +17,21 @@ class QuaternionLinear(nn.Module):
     def forward(self, x):
         return torch.mm(x, self.weight) + self.bias
 
-class DQN(nn.Module):
+class DuelingDQN(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.2):
-        super(DQN, self).__init__()
+        super(DuelingDQN, self).__init__()
         self.fc1 = QuaternionLinear(input_dim, hidden_dim)
-        self.bn1 = nn.BatchNorm1d(hidden_dim)
-        self.fc2 = QuaternionLinear(hidden_dim, output_dim)
+        self.ln1 = nn.LayerNorm(hidden_dim)  # Switch to LayerNorm
+        self.fc_value = QuaternionLinear(hidden_dim, 1)
+        self.fc_advantage = QuaternionLinear(hidden_dim, output_dim)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = self.bn1(torch.relu(self.fc1(x)))
+        x = self.ln1(torch.relu(self.fc1(x)))  # Use LayerNorm
         x = self.dropout(x)
-        return self.fc2(x)
+        value = self.fc_value(x)
+        advantage = self.fc_advantage(x)
+        return value + advantage - advantage.mean()
 
 Transition = namedtuple("Transition", ["state", "action", "next_state", "reward", "done"])
 
@@ -60,44 +62,40 @@ def train_dqn(env_name="CartPole-v1", episodes=1000, batch_size=32, capacity=100
     action_dim = env.action_space.n
     hidden_dim = 128
 
-    model = DQN(state_dim, hidden_dim, action_dim)
-    target_model = DQN(state_dim, hidden_dim, action_dim)
+    model = DuelingDQN(state_dim, hidden_dim, action_dim)
+    target_model = DuelingDQN(state_dim, hidden_dim, action_dim)
     target_model.load_state_dict(model.state_dict())
     target_model.eval()
 
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)  # Reduce LR every 100 episodes
     criterion = nn.SmoothL1Loss()
 
     memory = ReplayMemory(capacity)
-    steps_done = 0
 
     for episode in range(episodes):
         state = preprocess_state(env.reset())
-        done = False
         total_loss = 0
         episode_steps = 0
+        done = False
 
         while not done and episode_steps < max_steps:
-            epsilon = epsilon_end + (epsilon_start - epsilon_end) * np.exp(-1.0 * steps_done / epsilon_decay)
-            steps_done += 1
-            episode_steps += 1
-
+            epsilon = epsilon_end + (epsilon_start - epsilon_end) * np.exp(-1.0 * episode / epsilon_decay)
             if random.random() > epsilon:
                 with torch.no_grad():
-                    model.eval()
                     q_values = model(torch.FloatTensor(state))
                     action = q_values.argmax().item()
             else:
                 action = random.randrange(action_dim)
 
             result = env.step(action)
-            next_state, reward, done, _ = result[:4]
+            next_state, reward, done, _ = result if len(result) == 4 else (result[0], result[1], result[2], {})
+
             next_state = preprocess_state(next_state)
             memory.push(state, action, next_state, reward, done)
-
             state = next_state
 
-            if len(memory) < batch_size:
+            if len(memory) <= batch_size:
                 continue
 
             transitions = memory.sample(batch_size)
@@ -109,21 +107,22 @@ def train_dqn(env_name="CartPole-v1", episodes=1000, batch_size=32, capacity=100
             action_batch = torch.LongTensor(batch.action)
             reward_batch = torch.FloatTensor(batch.reward)
 
-            model.train()
-            q_values = model(state_batch)
-            q_values = q_values.gather(1, action_batch.unsqueeze(1))
+            q_values = model(state_batch).gather(1, action_batch.unsqueeze(1))
 
             next_q_values = torch.zeros(batch_size)
-            next_q_values[non_final_mask] = target_model(non_final_next_states).max(1)[0].detach()
-            next_q_values = next_q_values.unsqueeze(1)
-
-            target_q_values = (next_q_values * gamma) + reward_batch.view(-1, 1)
+            actions_from_online_model = model(non_final_next_states).max(1)[1].detach()
+            next_q_values[non_final_mask] = target_model(non_final_next_states).gather(1, actions_from_online_model.unsqueeze(-1)).squeeze(-1)
+            target_q_values = (next_q_values.unsqueeze(-1) * gamma) + reward_batch.view(-1, 1)
 
             loss = criterion(q_values, target_q_values)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
+            
+            episode_steps += 1
+
+        lr_scheduler.step()
 
         if episode % target_update == 0:
             target_model.load_state_dict(model.state_dict())

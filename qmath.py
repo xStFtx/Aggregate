@@ -19,11 +19,15 @@ class Quaternion:
 
     def normalize(self):
         norm_val = self.norm()
+        if norm_val == 0:
+            raise ValueError("Cannot normalize a zero quaternion.")
         return Quaternion(self.w/norm_val, self.x/norm_val, self.y/norm_val, self.z/norm_val)
 
     def inverse(self):
         norm_sq = self.norm()**2
         conj = self.conjugate()
+        if norm_sq == 0:
+            raise ValueError("Cannot invert a zero quaternion.")
         return Quaternion(conj.w/norm_sq, conj.x/norm_sq, conj.y/norm_sq, conj.z/norm_sq)
 
     def __truediv__(self, other):
@@ -186,10 +190,8 @@ if __name__ == "__main__":
 
     # Interpolation Example
     t = 0.5
-    interpolated_q_slerp = q1.slerp(q2, t)
-    interpolated_q_nlerp = q1.nlerp(q2, t)
-    print(f"SLERP Interpolation at t={t}: {interpolated_q_slerp}")
-    print(f"NLERP Interpolation at t={t}: {interpolated_q_nlerp}")
+    interpolated_q_slerp = slerp(q1, q2, t)
+    print(f"SLERP Interpolation at t={t}:", interpolated_q_slerp)
 
     # Differentiation and Integration Example
     t_symbol = sp.symbols('t')
@@ -201,7 +203,7 @@ if __name__ == "__main__":
     # Error Metric and Quaternion Averaging Example
     q3 = Quaternion(1, 1, 0, 0)
     q4 = Quaternion(1, -1, 0, 0)
-    error = q3.error_metric(q4)
+    error = q3.distance(q4)
     print("Error Metric between q3 and q4:", error)
 
     avg_q = Quaternion.quaternion_average([q3, q4])
