@@ -183,3 +183,26 @@ if __name__ == "__main__":
 
     quaternions = [Quaternion(1, 0, 0, 1), Quaternion(0, 1, 0, 1)]
     print("Quaternion Matrix:\n", quaternion_matrix(quaternions))
+
+    # Interpolation Example
+    t = 0.5
+    interpolated_q_slerp = q1.slerp(q2, t)
+    interpolated_q_nlerp = q1.nlerp(q2, t)
+    print(f"SLERP Interpolation at t={t}: {interpolated_q_slerp}")
+    print(f"NLERP Interpolation at t={t}: {interpolated_q_nlerp}")
+
+    # Differentiation and Integration Example
+    t_symbol = sp.symbols('t')
+    q_derivative = q1.differentiate(t_symbol)
+    q_integral = q1.integrate(t_symbol)
+    print("Quaternion Derivative:", q_derivative)
+    print("Quaternion Integral:", q_integral)
+
+    # Error Metric and Quaternion Averaging Example
+    q3 = Quaternion(1, 1, 0, 0)
+    q4 = Quaternion(1, -1, 0, 0)
+    error = q3.error_metric(q4)
+    print("Error Metric between q3 and q4:", error)
+
+    avg_q = Quaternion.quaternion_average([q3, q4])
+    print("Quaternion Average of q3 and q4:", avg_q)
