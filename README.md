@@ -10,7 +10,5 @@ pip install numpy sympy scipy torch gym
 ## Usage
 
 ```
-python math.py
-python nn.py
 python main.py
 ```
