@@ -5,6 +5,7 @@ import numpy as np
 import gym
 from collections import namedtuple, deque
 import random
+import time
 
 class QuaternionLinear(nn.Module):
     def __init__(self, input_dim, output_dim):
@@ -53,7 +54,7 @@ def preprocess_state(state):
         raise ValueError(f"Unexpected state shape: {state_array.shape}. Ensure the environment returns a simple array.")
     return np.expand_dims(state_array, 0)
 
-def train_dqn(env_name="CartPole-v1", episodes=1000, batch_size=32, capacity=10000, epsilon_start=1.0, epsilon_end=0.05, epsilon_decay=200, target_update=10, gamma=0.99, learning_rate=0.001):
+def train_dqn(env_name="CartPole-v1", episodes=1000, batch_size=32, capacity=10000, epsilon_start=1.0, epsilon_end=0.05, epsilon_decay=200, target_update=10, gamma=0.99, learning_rate=0.001, max_steps=1000):
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
@@ -74,10 +75,13 @@ def train_dqn(env_name="CartPole-v1", episodes=1000, batch_size=32, capacity=100
         state = preprocess_state(env.reset())
         done = False
         total_loss = 0
+        episode_steps = 0
 
-        while not done:
+        while not done and episode_steps < max_steps:
             epsilon = epsilon_end + (epsilon_start - epsilon_end) * np.exp(-1.0 * steps_done / epsilon_decay)
             steps_done += 1
+            episode_steps += 1
+
             if random.random() > epsilon:
                 with torch.no_grad():
                     model.eval()
@@ -124,7 +128,7 @@ def train_dqn(env_name="CartPole-v1", episodes=1000, batch_size=32, capacity=100
         if episode % target_update == 0:
             target_model.load_state_dict(model.state_dict())
 
-        print(f"Episode: {episode}, Loss: {total_loss}")
+        print(f"Episode: {episode}, Steps: {episode_steps}, Loss: {total_loss}")
 
 if __name__ == "__main__":
     train_dqn()
