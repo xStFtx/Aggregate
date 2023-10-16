@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import gym
-
-# Assuming you've kept the Quaternion class in main.py
+from collections import namedtuple, deque
+import random
 from qmath import Quaternion
 
 class QuaternionLinear(nn.Module):
@@ -20,14 +20,32 @@ class QuaternionLinear(nn.Module):
         return torch.mm(x, self.weight) + self.bias
 
 class DQN(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim):
+    def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.2):
         super(DQN, self).__init__()
         self.fc1 = QuaternionLinear(input_dim, hidden_dim)
+        self.bn1 = nn.BatchNorm1d(hidden_dim)
         self.fc2 = QuaternionLinear(hidden_dim, output_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        x = torch.relu(self.fc1(x))
+        x = self.bn1(torch.relu(self.fc1(x)))
+        x = self.dropout(x)
         return self.fc2(x)
+    
+Transition = namedtuple("Transition", ["state", "action", "next_state", "reward", "done"])
+class ReplayMemory:
+    def __init__(self, capacity):
+        self.memory = deque(maxlen=capacity)
+
+    def push(self, *args):
+        self.memory.append(Transition(*args))
+
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)
+
 def preprocess_state(state):
     try:
         # Check if state is a tuple (as the error suggests) and extract the numpy array
@@ -53,7 +71,7 @@ def preprocess_state(state):
         raise e
 
 
-def train_dqn(env_name="CartPole-v0", episodes=100):
+def train_dqn(env_name="CartPole-v0", episodes=100, batch_size=32, capacity=10000, epsilon_start=0.9, epsilon_end=0.05, epsilon_decay=200):
     env = gym.make(env_name)
     state_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
@@ -63,41 +81,73 @@ def train_dqn(env_name="CartPole-v0", episodes=100):
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.MSELoss()
 
+    memory = ReplayMemory(capacity)
+    steps_done = 0
+
     for episode in range(episodes):
         state = preprocess_state(env.reset())
-
         done = False
         total_loss = 0
 
         while not done:
-            q_values = model(torch.FloatTensor(state))
-            action = np.argmax(q_values.detach().numpy())
+            # Epsilon-Greedy Exploration
+            epsilon = epsilon_end + (epsilon_start - epsilon_end) * \
+                np.exp(-1. * steps_done / epsilon_decay)
+            steps_done += 1
+            if random.random() > epsilon:
+                with torch.no_grad():
+                    # Disable batch normalization during evaluation
+                    model.eval()
+                    q_values = model(torch.FloatTensor(state))
+                    action = q_values.argmax().item()
+            else:
+                action = random.randrange(action_dim)
+
             result = env.step(action)
-            print(result)
-            next_state, reward, done, _, _ = result
-
+            next_state, reward, done, _ = result[:4]
             next_state = preprocess_state(next_state)
-
-            # Obtain Q-values for the next state
-            next_q_values = model(torch.FloatTensor(next_state))
-
-            # Get max Q-value for the next state 
-            max_next_q_value = torch.max(next_q_values).item()
-
-            # Calculate the target Q-value
-            target_q_value = reward + (0.99 * max_next_q_value) if not done else reward
-            target_q_values = q_values.clone().detach()
-            target_q_values[0][action] = target_q_value
-
-            optimizer.zero_grad()
-            loss = criterion(q_values, target_q_values)
-            loss.backward()
-            optimizer.step()
+            memory.push(state, action, next_state, reward, done)
 
             state = next_state
+
+            if len(memory) < batch_size:
+                continue
+
+            # Sample from memory
+            transitions = memory.sample(batch_size)
+            batch = Transition(*zip(*transitions))
+
+            non_final_mask = torch.tensor(tuple(map(lambda s: s is not None, batch.next_state)), dtype=torch.bool)
+            non_final_next_states = torch.cat([torch.FloatTensor(s) for s in batch.next_state if s is not None])
+            state_batch = torch.cat([torch.FloatTensor(s) for s in batch.state])
+            action_batch = torch.LongTensor(batch.action)
+            reward_batch = torch.FloatTensor(batch.reward)
+
+            # Set the model back to training mode
+            model.train()
+
+# Inside the training loop
+            q_values = model(state_batch)
+
+            # Reshape q_values to match the shape of target_q_values
+            q_values = q_values.gather(1, action_batch.unsqueeze(1))
+
+            next_q_values = torch.zeros(batch_size)
+            next_q_values[non_final_mask] = model(non_final_next_states).max(1)[0].detach()
+            next_q_values = next_q_values.unsqueeze(1)
+
+            target_q_values = (next_q_values * 0.99) + reward_batch.view(-1, 1)
+
+
+
+            loss = criterion(q_values, target_q_values)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
             total_loss += loss.item()
 
         print(f"Episode: {episode}, Loss: {total_loss}")
 
 if __name__ == "__main__":
     train_dqn()
+
